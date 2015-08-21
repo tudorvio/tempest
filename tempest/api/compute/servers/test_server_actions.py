@@ -323,7 +323,7 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             properties=properties,
             status='active',
             sort_key='created_at',
-            sort_dir='asc')['images']
+            sort_dir='asc')
         self.assertEqual(2, len(image_list))
         self.assertEqual((backup1, backup2),
                          (image_list[0]['name'], image_list[1]['name']))
@@ -347,7 +347,7 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             properties=properties,
             status='active',
             sort_key='created_at',
-            sort_dir='asc')['images']
+            sort_dir='asc')
         self.assertEqual(2, len(image_list),
                          'Unexpected number of images for '
                          'v2:test_create_backup; was the oldest backup not '
@@ -474,7 +474,6 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
     def test_lock_unlock_server(self):
         # Lock the server,try server stop(exceptions throw),unlock it and retry
         self.client.lock_server(self.server_id)
-        self.addCleanup(self.client.unlock_server, self.server_id)
         server = self.client.show_server(self.server_id)
         self.assertEqual(server['status'], 'ACTIVE')
         # Locked server is not allowed to be stopped by non-admin user
@@ -505,3 +504,151 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             self.assertEqual(console_type, body['type'])
             self.assertNotEqual('', body['url'])
             self._validate_url(body['url'])
+
+
+class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
+    run_ssh = CONF.validation.run_validation
+
+    def setUp(self):
+        super(ServerActionsTestJSON, self).setUp()
+
+        # Set up a volume
+        # My opinion would be to have vol_ref and vol_ref_alt in conf
+        # and create vol_kwargs and vol_kwargs_alt from them here.
+        self.boot_volume = [{
+            'source_type': 'image',
+            'boot_index': '0',
+            'uuid': 'e26aecf4-bba1-4e00-a9ae-60944b80998c',
+            'volume_size': '1',
+            'destination_type': 'volume',
+            'device_name': 'nametest'}]
+        self.vol_kwargs = {
+            'block_device_mapping_v2': self.boot_volume}
+        self.boot_volume_alt = [{
+            'source_type': 'image',
+            'boot_index': '0',
+            'uuid': 'e26aecf4-bba1-4e00-a9ae-60944b80998c',
+            'volume_size': '1',
+            'destination_type': 'volume',
+            'device_name': 'nametest'}]
+        self.vol_kwargs_alt = {
+            'block_device_mapping_v2': self.boot_volume_alt}
+        # Check if the server is in a clean state after test
+        try:
+            waiters.wait_for_server_status(self.client,
+                                           self.server_id, 'ACTIVE')
+        except lib_exc.NotFound:
+            # The server was deleted by previous test, create a new one
+            server = self.create_test_server(
+                validatable=True,
+                wait_until='ACTIVE',
+                **self.vol_kwargs)
+            self.__class__.server_id = server['id']
+        except Exception:
+            # Rebuild server if something happened to it during a test
+            self.__class__.server_id = self.rebuild_server(self.server_id,
+                                                           validatable=True)
+
+    def _rebuild_server_and_check(self, image_ref, **kwargs):
+        rebuilt_server = self.client.rebuild(self.server_id,
+                                             image_ref,
+                                             **self.vol_kwargs)
+        waiters.wait_for_server_status(self.client, self.server_id, 'ACTIVE')
+        msg = ('Server was not rebuilt to the original volume. '
+               'The original volume: {0}. The current volume: {1}'
+               .format(self.boot_volume,
+                       rebuilt_server['block_device_mapping_v2']))
+
+        self.assertEqual(self.boot_volume,
+                         rebuilt_server['block_device_mapping_v2'],
+                         msg)
+
+    def test_rebuild_server(self):
+        meta = {'rebuild': 'server'}
+        new_name = data_utils.rand_name('server')
+        file_contents = 'Test server rebuild.'
+        personality = [{'path': 'rebuild.txt',
+                       'contents': base64.b64encode(file_contents)}]
+        password = 'rebuildPassw0rd'
+
+        rebuilt_server = self.client.rebuild(self.server_id,
+                                             self.image_ref_alt,
+                                             name=new_name,
+                                             metadata=meta,
+                                             personality=personality,
+                                             adminPass=password,
+                                             **self.vol_kwargs_alt)
+        # I haven't initialized self.vol_kwargs_alt in the setUp because
+        # I don't know if it should be in the conf or not.
+
+        # If the server was rebuilt on a different volume, restore it to the
+        # original volume once the test ends
+        if self.boot_volume_alt != self.boot_volume:
+            self.addCleanup(self._rebuild_server_and_check,
+                            self.image_ref,
+                            **self.vol_kwargs)
+
+        # Verify the properties in the initial response are correct
+        self.assertEqual(self.server_id, rebuilt_server['id'])
+        rebuilt_vol = rebuilt_server['block_device_mapping_v2']
+        self.assertEqual(self.boot_volume_alt, rebuilt_vol)
+        self.assertEqual(self.flavor_ref, rebuilt_server['flavor']['id'])
+
+        # Verify the server properties after the rebuild completes
+        waiters.wait_for_server_status(self.client,
+                                       rebuilt_server['id'], 'ACTIVE')
+        server = self.client.show_server(rebuilt_server['id'])
+        rebuilt_vol = server['block_device_mapping_v2']
+        self.assertEqual(self.boot_volume_alt, rebuilt_vol)
+        self.assertEqual(new_name, server['name'])
+
+        if CONF.validation.run_validation:
+            # TODO(jlanoux) add authentication with the provided password
+            linux_client = remote_client.RemoteClient(
+                self.get_server_ip(rebuilt_server),
+                self.ssh_user,
+                self.password,
+                self.validation_resources['keypair']['private_key'])
+            linux_client.validate_authentication()
+
+    def test_rebuild_server_in_stop_state(self):
+        # The server in stop state  should be rebuilt using the provided
+        # volume and remain in SHUTOFF state
+        server = self.client.show_server(self.server_id)
+        old_vol = server['block_device_mapping_v2']
+        new_vol = (self.boot_volume_alt
+                   if old_vol == self.boot_volume else self.boot_volume)
+        # Can't pass new_vol to rebuild function, so do this.
+        new_vol_kwargs = {'block_device_mapping_v2': new_vol}
+        # Same goes for old_vol
+        old_vol_kwargs = {'block_device_mapping_v2': old_vol}
+        self.client.stop(self.server_id)
+        waiters.wait_for_server_status(self.client, self.server_id, 'SHUTOFF')
+        # This method uses 'new_image' instead of image_ref.
+        rebuilt_server = self.client.rebuild(self.server_id,
+                                             self.image_ref,
+                                             **new_vol_kwargs)
+        # If the server was rebuilt with a different volume, restore it to the
+        # original one once the test ends
+        if self.boot_volume_alt != self.boot_volume:
+            self.addCleanup(self._rebuild_server_and_check,
+                            self.image_ref,
+                            **old_vol_kwargs)
+
+        # Verify the properties in the initial response are correct
+        self.assertEqual(self.server_id, rebuilt_server['id'])
+        rebuilt_vol = rebuilt_server['block_device_mapping_v2']
+        self.assertEqual(new_vol, rebuilt_vol)
+        self.assertEqual(self.flavor_ref, rebuilt_server['flavor']['id'])
+
+        # Verify the server properties after the rebuild completes
+        waiters.wait_for_server_status(self.client,
+                                       rebuilt_server['id'], 'SHUTOFF')
+        server = self.client.show_server(rebuilt_server['id'])
+        rebuilt_vol = server['block_device_mapping_v2']
+        self.assertEqual(new_vol, rebuilt_vol)
+
+        self.client.start(self.server_id)
+
+    def test_create_backup(self):
+        pass
