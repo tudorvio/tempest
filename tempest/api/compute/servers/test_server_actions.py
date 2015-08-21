@@ -41,6 +41,15 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
         # but if it has an issue, we build a new one
         super(ServerActionsTestJSON, self).setUp()
         # Check if the server is in a clean state after test
+        boot_volume = [{
+            'source_type': 'image',
+            'boot_index': '0',
+            'uuid': 'e26aecf4-bba1-4e00-a9ae-60944b80998c',
+            'volume_size': '1',
+            'destination_type': 'volume',
+            'device_name': 'nametest'}]
+        vol_kwargs = {
+            'block_device_mapping_v2': boot_volume}
         try:
             waiters.wait_for_server_status(self.client,
                                            self.server_id, 'ACTIVE')
@@ -48,7 +57,8 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             # The server was deleted by previous test, create a new one
             server = self.create_test_server(
                 validatable=True,
-                wait_until='ACTIVE')
+                wait_until='ACTIVE',
+                **vol_kwargs)
             self.__class__.server_id = server['id']
         except Exception:
             # Rebuild server if something happened to it during a test
@@ -505,7 +515,7 @@ class ServerActionsTestJSON(base.BaseV2ComputeTest):
             self.assertNotEqual('', body['url'])
             self._validate_url(body['url'])
 
-
+"""
 class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
     run_ssh = CONF.validation.run_validation
 
@@ -551,8 +561,8 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
 
     def _rebuild_server_and_check(self, image_ref, **kwargs):
         rebuilt_server = self.client.rebuild(self.server_id,
-                                             image_ref,
-                                             **self.vol_kwargs)
+                                             image_ref)
+                                             #**self.vol_kwargs)
         waiters.wait_for_server_status(self.client, self.server_id, 'ACTIVE')
         msg = ('Server was not rebuilt to the original volume. '
                'The original volume: {0}. The current volume: {1}'
@@ -576,8 +586,8 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
                                              name=new_name,
                                              metadata=meta,
                                              personality=personality,
-                                             adminPass=password,
-                                             **self.vol_kwargs_alt)
+                                             adminPass=password)
+                                             #**self.vol_kwargs_alt)
         # I haven't initialized self.vol_kwargs_alt in the setUp because
         # I don't know if it should be in the conf or not.
 
@@ -585,8 +595,8 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
         # original volume once the test ends
         if self.boot_volume_alt != self.boot_volume:
             self.addCleanup(self._rebuild_server_and_check,
-                            self.image_ref,
-                            **self.vol_kwargs)
+                            self.image_ref)
+                            #**self.vol_kwargs)
 
         # Verify the properties in the initial response are correct
         self.assertEqual(self.server_id, rebuilt_server['id'])
@@ -615,7 +625,7 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
         # The server in stop state  should be rebuilt using the provided
         # volume and remain in SHUTOFF state
         server = self.client.show_server(self.server_id)
-        old_vol = server['block_device_mapping_v2']
+        #old_vol = server['block_device_mapping_v2']
         new_vol = (self.boot_volume_alt
                    if old_vol == self.boot_volume else self.boot_volume)
         # Can't pass new_vol to rebuild function, so do this.
@@ -626,14 +636,14 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
         waiters.wait_for_server_status(self.client, self.server_id, 'SHUTOFF')
         # This method uses 'new_image' instead of image_ref.
         rebuilt_server = self.client.rebuild(self.server_id,
-                                             self.image_ref,
-                                             **new_vol_kwargs)
+                                             self.image_ref)
+                                             #**new_vol_kwargs)
         # If the server was rebuilt with a different volume, restore it to the
         # original one once the test ends
         if self.boot_volume_alt != self.boot_volume:
             self.addCleanup(self._rebuild_server_and_check,
-                            self.image_ref,
-                            **old_vol_kwargs)
+                            self.image_ref)
+                            #**old_vol_kwargs)
 
         # Verify the properties in the initial response are correct
         self.assertEqual(self.server_id, rebuilt_server['id'])
@@ -650,5 +660,6 @@ class ServerActionsVolumeTestJSON(ServerActionsTestJSON):
 
         self.client.start(self.server_id)
 
-    def test_create_backup(self):
+    def test_create_backuo(self):
         pass
+"""
